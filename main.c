@@ -43,6 +43,10 @@ void vTaskFunction(void* pvParameters)
     {
         printf("%s\n", pcTaskName);
 
+        printf("High water mark (words): %d\n", uxTaskGetStackHighWaterMark(NULL));
+
+        printf("Heap size: %d\n", xPortGetFreeHeapSize());
+
         for (volatile uint32_t i = 0; i < 500000; ++i);
         vTaskDelayUntil(&xLastWakeTime, xDelay250ms);
     }
