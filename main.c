@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <windows.h>
 
 #include <FreeRTOS.h>
 #include <task.h>
@@ -8,11 +9,16 @@
 #include <semphr.h>
 
 #define STATS_BUFFER_SIZE 256
+#define INTERRUPT_KEY VK_SPACE
 
-int sharedVar = 0; // Initialize sharedVar to a default value
+
+int sharedVar = 0; 
 
 
-static SemaphoreHandle_t mutex; // Correct the type name to SemaphoreHandle_t
+static SemaphoreHandle_t mutex;
+
+TaskHandle_t xInterruptTaskHandle = NULL;
+
 void initializeMutex() {
     mutex = xSemaphoreCreateMutex();
 }
@@ -40,7 +46,7 @@ void vPrintLine(const char* msg) {
 
 void vTaskFunction1(void* pvParameters)
 {
-    char* pcTaskName = (char*)pvParameters;
+    //char* pcTaskName = (char*)pvParameters;
 
     for (;;)
     {
@@ -58,12 +64,12 @@ void vTaskFunction1(void* pvParameters)
 
             xSemaphoreGive(mutex);
 
-            printf("Shared variable updated: %d\n", sharedVar);
+            printf("Shared variable updated by Task 1: %d\n", sharedVar);
         }
         else
         {
             // Add a valid statement to the else block  
-            printf("Failed to take mutex\n");
+            printf("Failed to take mutex at Task 1\n");
 
         }
 
@@ -73,7 +79,7 @@ void vTaskFunction1(void* pvParameters)
 
 void vTaskFunction2(void* pvParameters)
 {
-    char* pcTaskName = (char*)pvParameters;
+    //char* pcTaskName = (char*)pvParameters;
 
     for (;;)
     {
@@ -91,12 +97,12 @@ void vTaskFunction2(void* pvParameters)
 
             xSemaphoreGive(mutex);
 
-            printf("Shared variable updated: %d\n", sharedVar);
+            printf("Shared variable updated by Task 2: %d\n", sharedVar);
         }
         else
         {
             // Add a valid statement to the else block  
-            printf("Failed to take mutex\n");
+            printf("Failed to take mutex at Task 2\n");
 
         }
 
@@ -118,6 +124,38 @@ void vPeriodicTask(void* pvParameters)
     }
 }
 
+void vInterruptHandledTask(void* pvParameter)
+{
+    for (;;)
+    {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);    
+
+        printf(">>> Interrupt handled by ISR Task at tick %lu\n", xTaskGetTickCount());
+
+        if (xSemaphoreTake(mutex, pdMS_TO_TICKS(1000)) == pdTRUE)
+        {
+            // Simulate some processing
+            sharedVar += 10;
+            xSemaphoreGive(mutex);
+            printf(">>> Interrupt Task added +10 to sharedVar: %d\n", sharedVar);
+        }
+    }
+}
+
+void vKeyboardInterruptTask(void* pvParameters) 
+{
+    for (;;) 
+    {
+        if (GetAsyncKeyState(INTERRUPT_KEY) & 0x8000)
+        {
+            vTaskNotifyGiveFromISR(xInterruptTaskHandle, 0, NULL);
+            vTaskDelay(pdMS_TO_TICKS(50)); 
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(50)); 
+    }
+}
+
 int main(void)
 {
     initializeMutex();
@@ -131,6 +169,8 @@ int main(void)
     //xTaskCreate(vPeriodicTask, "Periodic Task", 256, NULL, 2, NULL);
 
     //xTaskCreate(prvStatsTask, "Stats", 256, NULL, 3, NULL);
+    xTaskCreate(vInterruptHandledTask, "ISR Task", 256, NULL, 2, &xInterruptTaskHandle);
+    xTaskCreate(vKeyboardInterruptTask, "Keyboard ISR", 256, NULL, 3, NULL);
 
     vTaskStartScheduler();
 
