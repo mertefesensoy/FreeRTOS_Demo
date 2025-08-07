@@ -149,7 +149,7 @@ void vKeyboardInterruptTask(void* pvParameters)
         if (GetAsyncKeyState(INTERRUPT_KEY) & 0x8000)
         {
             vTaskNotifyGiveFromISR(xInterruptTaskHandle, 0, NULL);
-            vTaskDelay(pdMS_TO_TICKS(50)); 
+            vTaskDelay(pdMS_TO_TICKS(500)); 
         }
 
         vTaskDelay(pdMS_TO_TICKS(50)); 
