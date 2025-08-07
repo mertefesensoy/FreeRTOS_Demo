@@ -16,21 +16,19 @@ void initializeMutex() {
 
 static void prvStatsTask(void* pvParameters)
 {
-   TickType_t xLastWake = xTaskGetTickCount();
-   const TickType_t xPeriod = pdMS_TO_TICKS(1000);
-   static char buf[STATS_BUFFER_SIZE];
+    //static char buf[STATS_BUFFER_SIZE];
 
    for (;;)
    {
 
-       vTaskDelayUntil(&xLastWake, xPeriod);
+        vTaskDelay(pdMS_TO_TICKS(1000));
 
-       printf("\nTask          Abs(ms)    %%Time\n");
+        //  printf("\nTask          Abs(ms)    %%Time\n");
 
-       vTaskGetRunTimeStatistics(buf, STATS_BUFFER_SIZE);
+         // vTaskGetRunTimeStatistics(buf, STATS_BUFFER_SIZE);
 
-       printf("%s\n", buf);
-   }
+         // printf("%s\n", buf);
+    }
 }
 
 void vPrintLine(const char* msg) {
@@ -39,11 +37,36 @@ void vPrintLine(const char* msg) {
 
 void vTaskFunction(void* pvParameters)
 {
-   char* pcTaskName = (char*)pvParameters;
-   TickType_t xLastWakeTime;
-   const TickType_t xDelay250ms = pdMS_TO_TICKS(250);
+    char* pcTaskName = (char*)pvParameters;
 
-   xLastWakeTime = xTaskGetTickCount();
+    for (;;)
+    {
+        //printf("%s\n", pcTaskName);
+
+        //printf("High water mark (words): %d\n", uxTaskGetStackHighWaterMark(NULL));
+
+        //printf("Heap size: %d\n", xPortGetFreeHeapSize());
+
+        if ((xSemaphoreTake(mutex, pdMS_TO_TICKS(1000))) == pdTRUE) {
+
+
+            sharedVar++;
+            vTaskDelay(pdMS_TO_TICKS(250));
+
+            xSemaphoreGive(mutex);
+
+            printf("Shared variable updated: %d\n", sharedVar);
+        }
+        else
+        {
+            // Add a valid statement to the else block  
+            printf("Failed to take mutex\n");
+
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(250));
+    }
+}
 
    int sharedVar = 0; // Initialize sharedVar to a default value
 
@@ -87,11 +110,11 @@ void vPeriodicTask(void* pvParameters)
 
    xLastWakeTime = xTaskGetTickCount();
 
-   for (;;)
-   {
-       printf("Periodic task is running\n");
-       vTaskDelayUntil(&xLastWakeTime, xDelay5s);
-   }
+    for (;;)
+    {
+        printf("Periodic task is running\n");
+        vTaskDelayUntil(&xLastWakeTime, xDelay5s);
+    }
 }
 
 int main(void)
@@ -99,14 +122,14 @@ int main(void)
    initializeMutex();
    srand((unsigned int)xTaskGetTickCount());
 
-   static const char* pcTextForTask1 = "Task 1 is running";
-   static const char* pcTextForTask2 = "Task 2 is running";
+    //static const char* pcTextForTask1 = "Task 1 is running";
+    //static const char* pcTextForTask2 = "Task 2 is running";
 
-   xTaskCreate(vTaskFunction, "Task 1", 256, (void*)pcTextForTask1, 1, NULL);
-   xTaskCreate(vTaskFunction, "Task 2", 256, (void*)pcTextForTask2, 1, NULL);
-   xTaskCreate(vPeriodicTask, "Periodic Task", 256, NULL, 2, NULL);
+    xTaskCreate(vTaskFunction1, "Task 1", 256, NULL, 1, NULL);
+    xTaskCreate(vTaskFunction2, "Task 2", 256, NULL, 1, NULL);
+    //xTaskCreate(vPeriodicTask, "Periodic Task", 256, NULL, 2, NULL);
 
-   xTaskCreate(prvStatsTask, "Stats", 256, NULL, 3, NULL);
+    //xTaskCreate(prvStatsTask, "Stats", 256, NULL, 3, NULL);
 
    vTaskStartScheduler();
 
