@@ -9,6 +9,9 @@
 
 #define STATS_BUFFER_SIZE 256
 
+int sharedVar = 0; // Initialize sharedVar to a default value
+
+
 static SemaphoreHandle_t mutex; // Correct the type name to SemaphoreHandle_t
 void initializeMutex() {
    mutex = xSemaphoreCreateMutex();
@@ -16,20 +19,18 @@ void initializeMutex() {
 
 static void prvStatsTask(void* pvParameters)
 {
-   TickType_t xLastWake = xTaskGetTickCount();
-   const TickType_t xPeriod = pdMS_TO_TICKS(1000);
-   static char buf[STATS_BUFFER_SIZE];
+   //static char buf[STATS_BUFFER_SIZE];
 
    for (;;)
    {
 
-       vTaskDelayUntil(&xLastWake, xPeriod);
+       vTaskDelay(pdMS_TO_TICKS(1000));
 
-       printf("\nTask          Abs(ms)    %%Time\n");
+     //  printf("\nTask          Abs(ms)    %%Time\n");
 
-       vTaskGetRunTimeStatistics(buf, STATS_BUFFER_SIZE);
+      // vTaskGetRunTimeStatistics(buf, STATS_BUFFER_SIZE);
 
-       printf("%s\n", buf);
+      // printf("%s\n", buf);
    }
 }
 
@@ -37,32 +38,23 @@ void vPrintLine(const char* msg) {
    printf("%s\n", msg);
 }
 
-void vTaskFunction(void* pvParameters)
+void vTaskFunction1(void* pvParameters)
 {
    char* pcTaskName = (char*)pvParameters;
-   TickType_t xLastWakeTime;
-   const TickType_t xDelay250ms = pdMS_TO_TICKS(250);
-
-   xLastWakeTime = xTaskGetTickCount();
-
-   int sharedVar = 0; // Initialize sharedVar to a default value
 
    for (;;)
    {
-       printf("%s\n", pcTaskName);
+       //printf("%s\n", pcTaskName);
 
-       printf("High water mark (words): %d\n", uxTaskGetStackHighWaterMark(NULL));
+       //printf("High water mark (words): %d\n", uxTaskGetStackHighWaterMark(NULL));
 
-       printf("Heap size: %d\n", xPortGetFreeHeapSize());
+       //printf("Heap size: %d\n", xPortGetFreeHeapSize());
 
-       if ((xSemaphoreTake(mutex, 0)) == pdTRUE) {
+       if ((xSemaphoreTake(mutex, pdMS_TO_TICKS(1000))) == pdTRUE) {
 
            
-           int localVar = sharedVar;
-           localVar++;
-           int delayMs = 1000 + rand() % 4001; // Random between 1000 and 5000 ms
-           vTaskDelay(pdMS_TO_TICKS(delayMs));
-           sharedVar = localVar;
+           sharedVar++;
+           vTaskDelay(pdMS_TO_TICKS(250));
 
            xSemaphoreGive(mutex);
 
@@ -75,9 +67,41 @@ void vTaskFunction(void* pvParameters)
                   
        }
 
-       for (volatile uint32_t i = 0; i < 500000; ++i);
-       vTaskDelayUntil(&xLastWakeTime, xDelay250ms);
+       vTaskDelay(pdMS_TO_TICKS(250));
    }
+}
+
+void vTaskFunction2(void* pvParameters)
+{
+    char* pcTaskName = (char*)pvParameters;
+
+    for (;;)
+    {
+        //printf("%s\n", pcTaskName);
+
+        //printf("High water mark (words): %d\n", uxTaskGetStackHighWaterMark(NULL));
+
+        //printf("Heap size: %d\n", xPortGetFreeHeapSize());
+
+        if ((xSemaphoreTake(mutex, pdMS_TO_TICKS(1000))) == pdTRUE) {
+
+
+            sharedVar++;
+            vTaskDelay(pdMS_TO_TICKS(250));
+
+            xSemaphoreGive(mutex);
+
+            printf("Shared variable updated: %d\n", sharedVar);
+        }
+        else
+        {
+            // Add a valid statement to the else block  
+            printf("Failed to take mutex\n");
+
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(250));
+    }
 }
 
 void vPeriodicTask(void* pvParameters)
@@ -99,14 +123,14 @@ int main(void)
    initializeMutex();
    srand((unsigned int)xTaskGetTickCount());
 
-   static const char* pcTextForTask1 = "Task 1 is running";
-   static const char* pcTextForTask2 = "Task 2 is running";
+   //static const char* pcTextForTask1 = "Task 1 is running";
+   //static const char* pcTextForTask2 = "Task 2 is running";
 
-   xTaskCreate(vTaskFunction, "Task 1", 256, (void*)pcTextForTask1, 1, NULL);
-   xTaskCreate(vTaskFunction, "Task 2", 256, (void*)pcTextForTask2, 1, NULL);
-   xTaskCreate(vPeriodicTask, "Periodic Task", 256, NULL, 2, NULL);
+   xTaskCreate(vTaskFunction1, "Task 1", 256, NULL, 1, NULL);
+   xTaskCreate(vTaskFunction2, "Task 2", 256, NULL, 1, NULL);
+   //xTaskCreate(vPeriodicTask, "Periodic Task", 256, NULL, 2, NULL);
 
-   xTaskCreate(prvStatsTask, "Stats", 256, NULL, 3, NULL);
+   //xTaskCreate(prvStatsTask, "Stats", 256, NULL, 3, NULL);
 
    vTaskStartScheduler();
 
