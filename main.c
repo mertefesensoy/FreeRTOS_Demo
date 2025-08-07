@@ -210,8 +210,8 @@ void vUARTHandlerTask(void* pvParameters)
                     sharedVar += 10;
                     xSemaphoreGive(mutex);
 
-                    printf(">>> Stored value: %.2f | Total count: %d | sharedVar: %d\n",
-                        val, globalFloatCount, sharedVar);
+                    printf(">>> Stored value: %.2f | Total count: %d\n",
+                        val, globalFloatCount);
                 }
             }
         }
