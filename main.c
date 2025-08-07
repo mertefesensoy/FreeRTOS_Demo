@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <windows.h>
+#include <conio.h>
 
 #include <FreeRTOS.h>
 #include <task.h>
@@ -10,12 +11,12 @@
 
 #define STATS_BUFFER_SIZE 256
 #define INTERRUPT_KEY VK_SPACE
-
-
-int sharedVar = 0;
-
+#define INPUT_BUFFER_SIZE 100
 
 static SemaphoreHandle_t mutex;
+static QueueHandle_t xInputQueue;
+
+int sharedVar = 0;
 
 TaskHandle_t xInterruptTaskHandle = NULL;
 
@@ -156,21 +157,61 @@ void vKeyboardInterruptTask(void* pvParameters)
     }
 }
 
+void vUARTHandlerTask(void* pvParameters)
+{
+    char rxBuffer[INPUT_BUFFER_SIZE];
+    for (;;) 
+    {
+        if (xQueueReceive(xInputQueue, &rxBuffer, portMAX_DELAY) == pdTRUE) 
+        {
+            printf(">>> UART RX: %s\n", rxBuffer);
+            if (xSemaphoreTake(mutex, pdMS_TO_TICKS(1000)) == pdTRUE) 
+            {
+                //sharedVar += 10;
+                xSemaphoreGive(mutex);
+                //printf(">>> sharedVar updated: %d\n", sharedVar);
+            }
+        }
+    }
+}
+
+DWORD WINAPI UARTSimThread(LPVOID lpParam) 
+{
+    char buffer[INPUT_BUFFER_SIZE];
+    for (;;) 
+    {
+        if (fgets(buffer, sizeof(buffer), stdin)) 
+        {
+            buffer[strcspn(buffer, "\n")] = 0;  // strip newline
+            xQueueSend(xInputQueue, buffer, portMAX_DELAY);
+        }
+    }
+    return 0;
+}
+
 int main(void)
 {
     initializeMutex();
-    srand((unsigned int)xTaskGetTickCount());
+
+    xInputQueue = xQueueCreate(5, sizeof(char[INPUT_BUFFER_SIZE]));
+
+    // Start the Win32 thread to simulate UART reception
+    CreateThread(NULL, 0, UARTSimThread, NULL, 0, NULL);
+
+    // Create the FreeRTOS task that processes UART input
+    xTaskCreate(vUARTHandlerTask, "UART RX", 256, NULL, 2, NULL);
+
 
     //static const char* pcTextForTask1 = "Task 1 is running";
     //static const char* pcTextForTask2 = "Task 2 is running";
 
-    xTaskCreate(vTaskFunction1, "Task 1", 256, NULL, 1, NULL);
-    xTaskCreate(vTaskFunction2, "Task 2", 256, NULL, 1, NULL);
+    //xTaskCreate(vTaskFunction1, "Task 1", 256, NULL, 1, NULL);
+    //xTaskCreate(vTaskFunction2, "Task 2", 256, NULL, 1, NULL);
     //xTaskCreate(vPeriodicTask, "Periodic Task", 256, NULL, 2, NULL);
 
     //xTaskCreate(prvStatsTask, "Stats", 256, NULL, 3, NULL);
-    xTaskCreate(vInterruptHandledTask, "ISR Task", 256, NULL, 2, &xInterruptTaskHandle);
-    xTaskCreate(vKeyboardInterruptTask, "Keyboard ISR", 256, NULL, 3, NULL);
+    //xTaskCreate(vInterruptHandledTask, "ISR Task", 256, NULL, 2, &xInterruptTaskHandle);
+    //xTaskCreate(vKeyboardInterruptTask, "Keyboard ISR", 256, NULL, 3, NULL);
 
     vTaskStartScheduler();
 
