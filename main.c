@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <windows.h>
 #include <conio.h>
+#include <string.h>
 
 #include <FreeRTOS.h>
 #include <task.h>
@@ -16,12 +17,23 @@
 static SemaphoreHandle_t mutex;
 static QueueHandle_t xInputQueue;
 
+float globalFloatSum = 0.0f;
+int globalFloatCount = 0;
 int sharedVar = 0;
 
 TaskHandle_t xInterruptTaskHandle = NULL;
 
 void initializeMutex() {
     mutex = xSemaphoreCreateMutex();
+}
+
+float stringToFloat(const char* str) {
+    int sum = 0;
+    while (*str) {
+        sum += (unsigned char)(*str);
+        str++;
+    }
+    return sum / 10.0f;  
 }
 
 static void prvStatsTask(void* pvParameters)
@@ -164,12 +176,43 @@ void vUARTHandlerTask(void* pvParameters)
     {
         if (xQueueReceive(xInputQueue, &rxBuffer, portMAX_DELAY) == pdTRUE) 
         {
-            printf(">>> UART RX: %s\n", rxBuffer);
-            if (xSemaphoreTake(mutex, pdMS_TO_TICKS(1000)) == pdTRUE) 
+            rxBuffer[strcspn(rxBuffer, "\n")] = 0; // Remove newline
+            printf("[UART] Received message: %s\n", rxBuffer);
+
+            if (strcmp(rxBuffer, "avg") == 0)
             {
-                //sharedVar += 10;
-                xSemaphoreGive(mutex);
-                //printf(">>> sharedVar updated: %d\n", sharedVar);
+                if (xSemaphoreTake(mutex, pdMS_TO_TICKS(1000)) == pdTRUE)
+                {
+                    if (globalFloatCount == 0)
+                        printf(">>> No inputs yet.\n");
+                    else
+                        printf(">>> Current average: %.2f\n", globalFloatSum / globalFloatCount);
+
+                    xSemaphoreGive(mutex);
+                }
+            }
+            else
+            {
+                float val;
+                char* endptr;
+                val = strtof(rxBuffer, &endptr);
+
+                if (*endptr != '\0') {
+                    // Not a valid float, so convert to float via ASCII
+                    val = stringToFloat(rxBuffer);
+                    printf(">>> Converted string to float: %.2f\n", val);
+                }
+
+                if (xSemaphoreTake(mutex, pdMS_TO_TICKS(1000)) == pdTRUE)
+                {
+                    globalFloatSum += val;
+                    globalFloatCount++;
+                    sharedVar += 10;
+                    xSemaphoreGive(mutex);
+
+                    printf(">>> Stored value: %.2f | Total count: %d | sharedVar: %d\n",
+                        val, globalFloatCount, sharedVar);
+                }
             }
         }
     }
@@ -182,7 +225,7 @@ DWORD WINAPI UARTSimThread(LPVOID lpParam)
     {
         if (fgets(buffer, sizeof(buffer), stdin)) 
         {
-            buffer[strcspn(buffer, "\n")] = 0;  // strip newline
+            buffer[strcspn(buffer, "\n")] = 0;  
             xQueueSend(xInputQueue, buffer, portMAX_DELAY);
         }
     }
@@ -195,10 +238,9 @@ int main(void)
 
     xInputQueue = xQueueCreate(5, sizeof(char[INPUT_BUFFER_SIZE]));
 
-    // Start the Win32 thread to simulate UART reception
+    
     CreateThread(NULL, 0, UARTSimThread, NULL, 0, NULL);
 
-    // Create the FreeRTOS task that processes UART input
     xTaskCreate(vUARTHandlerTask, "UART RX", 256, NULL, 2, NULL);
 
 
