@@ -115,6 +115,7 @@ void vPeriodicTask(void* pvParameters)
    {
        printf("Periodic task is running\n");
        vTaskDelayUntil(&xLastWakeTime, xDelay5s);
+
    }
 }
 
