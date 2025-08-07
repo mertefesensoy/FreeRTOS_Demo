@@ -12,7 +12,7 @@
 #define INTERRUPT_KEY VK_SPACE
 
 
-int sharedVar = 0; 
+int sharedVar = 0;
 
 
 static SemaphoreHandle_t mutex;
@@ -128,7 +128,7 @@ void vInterruptHandledTask(void* pvParameter)
 {
     for (;;)
     {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);    
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
         printf(">>> Interrupt handled by ISR Task at tick %lu\n", xTaskGetTickCount());
 
@@ -142,17 +142,17 @@ void vInterruptHandledTask(void* pvParameter)
     }
 }
 
-void vKeyboardInterruptTask(void* pvParameters) 
+void vKeyboardInterruptTask(void* pvParameters)
 {
-    for (;;) 
+    for (;;)
     {
         if (GetAsyncKeyState(INTERRUPT_KEY) & 0x8000)
         {
             vTaskNotifyGiveFromISR(xInterruptTaskHandle, 0, NULL);
-            vTaskDelay(pdMS_TO_TICKS(500)); 
+            vTaskDelay(pdMS_TO_TICKS(500));
         }
 
-        vTaskDelay(pdMS_TO_TICKS(50)); 
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 
