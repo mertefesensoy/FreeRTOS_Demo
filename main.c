@@ -1,261 +1,290 @@
+/* -------------------- Includes -------------------- */
 #include <stdio.h>
-#include <stdint.h>
 #include <stdlib.h>
-#include <windows.h>
-#include <conio.h>
 #include <string.h>
+#include <time.h>
+#ifdef _WIN32
+#include <conio.h>   /* _kbhit(), _getch() */
+#endif
 
-#include <FreeRTOS.h>
-#include <task.h>
-#include <queue.h>
-#include <semphr.h>
+#include "FreeRTOS.h"
+#include "task.h"
+#include "queue.h"
+#include "semphr.h"
 
-#define STATS_BUFFER_SIZE 256
-#define INTERRUPT_KEY VK_SPACE
-#define INPUT_BUFFER_SIZE 100
+/* -------------------- Knobs -------------------- */
+#define SENSOR_PERIOD_MS          100      /* “interrupt” every 100ms */
+#define LOGGER_PERIOD_MS         1000      /* print status every 1s   */
+#define HEARTBEAT_PERIOD_MS      2000
+#define CONSOLE_POLL_MS            20
 
-static SemaphoreHandle_t mutex;
-static QueueHandle_t xInputQueue;
+#define CBUF_CAPACITY              64      /* circular buffer length  */
+#define USE_MUTEX                   1      /* flip to 0 to test races */
 
-float globalFloatSum = 0.0f;
-int globalFloatCount = 0;
-int sharedVar = 0;
+/* -------------------- Shared State -------------------- */
+typedef struct {
+    uint32_t buf[CBUF_CAPACITY];
+    size_t   head;        /* next write index */
+    size_t   count;       /* number of valid samples */
+    uint64_t sum;         /* running sum for O(1) average */
+} sensor_buffer_t;
 
-TaskHandle_t xInterruptTaskHandle = NULL;
+static sensor_buffer_t gSensorBuf = { 0 };
 
-void initializeMutex() {
-    mutex = xSemaphoreCreateMutex();
+#if USE_MUTEX
+static SemaphoreHandle_t gBufMutex;
+#endif
+
+/* Task handles so the “ISR shim” can notify the handler */
+static TaskHandle_t xSensorHandlerTask = NULL;
+
+/* Console (UART) line queue */
+#define LINE_MAX 80
+static QueueHandle_t xLineQueue;
+
+/* -------------------- Small Helpers -------------------- */
+static inline void lockBuf(void) {
+#if USE_MUTEX
+    xSemaphoreTake(gBufMutex, portMAX_DELAY);
+#endif
+}
+static inline void unlockBuf(void) {
+#if USE_MUTEX
+    xSemaphoreGive(gBufMutex);
+#endif
 }
 
-float stringToFloat(const char* str) {
-    int sum = 0;
-    while (*str) {
-        sum += (unsigned char)(*str);
-        str++;
-    }
-    return sum / 10.0f;  
-}
-
-static void prvStatsTask(void* pvParameters)
+static void cbuf_push(sensor_buffer_t* b, uint32_t sample)
 {
-    //static char buf[STATS_BUFFER_SIZE];
-
-    for (;;)
-    {
-
-        vTaskDelay(pdMS_TO_TICKS(1000));
-
-        //  printf("\nTask          Abs(ms)    %%Time\n");
-
-         // vTaskGetRunTimeStatistics(buf, STATS_BUFFER_SIZE);
-
-         // printf("%s\n", buf);
+    /* if buffer not full, just append; if full, overwrite oldest and fix sum */
+    if (b->count < CBUF_CAPACITY) {
+        b->buf[b->head] = sample;
+        b->head = (b->head + 1) % CBUF_CAPACITY;
+        b->count++;
+        b->sum += sample;
     }
-}
-
-void vPrintLine(const char* msg) {
-    printf("%s\n", msg);
-}
-
-void vTaskFunction1(void* pvParameters)
-{
-    //char* pcTaskName = (char*)pvParameters;
-
-    for (;;)
-    {
-        //printf("%s\n", pcTaskName);
-
-        //printf("High water mark (words): %d\n", uxTaskGetStackHighWaterMark(NULL));
-
-        //printf("Heap size: %d\n", xPortGetFreeHeapSize());
-
-        if ((xSemaphoreTake(mutex, pdMS_TO_TICKS(1000))) == pdTRUE) {
-
-
-            sharedVar++;
-            vTaskDelay(pdMS_TO_TICKS(250));
-
-            xSemaphoreGive(mutex);
-
-            printf("Shared variable updated by Task 1: %d\n", sharedVar);
-        }
-        else
-        {
-            // Add a valid statement to the else block  
-            printf("Failed to take mutex at Task 1\n");
-
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(250));
+    else {
+        /* overwrite oldest = element at head, because head always points to next write */
+        uint32_t old = b->buf[b->head];
+        b->buf[b->head] = sample;
+        b->head = (b->head + 1) % CBUF_CAPACITY;
+        b->sum += sample;
+        b->sum -= old;
     }
 }
 
-void vTaskFunction2(void* pvParameters)
+static void cbuf_clear(sensor_buffer_t* b)
 {
-    //char* pcTaskName = (char*)pvParameters;
+    memset(b, 0, sizeof(*b));
+}
 
-    for (;;)
-    {
-        //printf("%s\n", pcTaskName);
+/* -------------------- Tasks -------------------- */
 
-        //printf("High water mark (words): %d\n", uxTaskGetStackHighWaterMark(NULL));
+/* High-priority “ISR shim”: fires every 100 ms and notifies the handler with the reading.
+   In real HW, the ISR would use vTaskNotifyGiveFromISR/xTaskNotifyFromISR; here we use a task. */
+static void vSensorIsrShimTask(void* pv)
+{
+    (void)pv;
+    TickType_t last = xTaskGetTickCount();
 
-        //printf("Heap size: %d\n", xPortGetFreeHeapSize());
+    for (;;) {
+        vTaskDelayUntil(&last, pdMS_TO_TICKS(SENSOR_PERIOD_MS));
 
-        if ((xSemaphoreTake(mutex, pdMS_TO_TICKS(1000))) == pdTRUE) {
+        /* Pseudo reading: 12-bit ADC-ish value with some slow drift */
+        static uint32_t t = 0;
+        uint32_t reading = (uint32_t)((rand() % 4096) + (t++ % 50));
 
-
-            sharedVar++;
-            vTaskDelay(pdMS_TO_TICKS(250));
-
-            xSemaphoreGive(mutex);
-
-            printf("Shared variable updated by Task 2: %d\n", sharedVar);
-        }
-        else
-        {
-            // Add a valid statement to the else block  
-            printf("Failed to take mutex at Task 2\n");
-
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(250));
+        /* Pass the reading to the handler via direct notification value */
+        /* Overwrite mode: we don’t queue many interrupts; we just deliver latest sample. */
+        xTaskNotify(xSensorHandlerTask, reading, eSetValueWithOverwrite);
+        /* Keep ISR-shim short: do not take mutex or do heavy work here. */
     }
 }
 
-void vPeriodicTask(void* pvParameters)
+/* Sensor handler: blocked on notification; on wake reads value and updates buffer under mutex. */
+static void vSensorHandlerTask(void* pv)
 {
-    TickType_t xLastWakeTime;
-    const TickType_t xDelay5s = pdMS_TO_TICKS(5000);
+    (void)pv;
+    uint32_t value = 0;
 
-    xLastWakeTime = xTaskGetTickCount();
+    for (;;) {
+        /* Wait forever for next “interrupt” sample */
+        BaseType_t ok = xTaskNotifyWait(
+            0,                   /* don’t clear any bits on entry */
+            0xFFFFFFFF,          /* clear all bits on exit */
+            &value,              /* out: last written value */
+            portMAX_DELAY);
+        if (ok == pdTRUE) {
+            TickType_t now = xTaskGetTickCount();
 
-    for (;;)
-    {
-        printf("Periodic task is running\n");
-        vTaskDelayUntil(&xLastWakeTime, xDelay5s);
-    }
-}
+            /* Simulate the “deferred work” of an ISR: update shared buffer */
+            lockBuf();
+            cbuf_push(&gSensorBuf, value);
+            unlockBuf();
 
-void vInterruptHandledTask(void* pvParameter)
-{
-    for (;;)
-    {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-
-        printf(">>> Interrupt handled by ISR Task at tick %lu\n", xTaskGetTickCount());
-
-        if (xSemaphoreTake(mutex, pdMS_TO_TICKS(1000)) == pdTRUE)
-        {
-            // Simulate some processing
-            sharedVar += 10;
-            xSemaphoreGive(mutex);
-            printf(">>> Interrupt Task added +10 to sharedVar: %d\n", sharedVar);
+            printf("[Handler] t=%u ms  sample=%lu\n",
+                (unsigned)pdTICKS_TO_MS(now), (unsigned long)value);
         }
     }
 }
 
-void vKeyboardInterruptTask(void* pvParameters)
+/* Logger: once per second, prints average and count under protection. */
+static void vLoggerTask(void* pv)
 {
-    for (;;)
-    {
-        if (GetAsyncKeyState(INTERRUPT_KEY) & 0x8000)
-        {
-            vTaskNotifyGiveFromISR(xInterruptTaskHandle, 0, NULL);
-            vTaskDelay(pdMS_TO_TICKS(500));
-        }
+    (void)pv;
+    TickType_t last = xTaskGetTickCount();
 
-        vTaskDelay(pdMS_TO_TICKS(50));
+    for (;;) {
+        vTaskDelayUntil(&last, pdMS_TO_TICKS(LOGGER_PERIOD_MS));
+
+        uint64_t sum;
+        size_t   count;
+
+        lockBuf();
+        sum = gSensorBuf.sum;
+        count = gSensorBuf.count;
+        unlockBuf();
+
+        double avg = (count == 0) ? 0.0 : (double)sum / (double)count;
+
+        printf("[Logger] samples=%zu  avg=%.2f%s\n",
+            count, avg,
+#if USE_MUTEX
+            ""
+#else
+            "   (mutex OFF: expect occasional glitches!)"
+#endif
+        );
     }
 }
 
-void vUARTHandlerTask(void* pvParameters)
+/* Heartbeat/background: runs only when others are idle/blocked. */
+static void vHeartbeatTask(void* pv)
 {
-    char rxBuffer[INPUT_BUFFER_SIZE];
-    for (;;) 
-    {
-        if (xQueueReceive(xInputQueue, &rxBuffer, portMAX_DELAY) == pdTRUE) 
-        {
-            rxBuffer[strcspn(rxBuffer, "\n")] = 0; // Remove newline
-            printf("[UART] Received message: %s\n", rxBuffer);
+    (void)pv;
+    TickType_t last = xTaskGetTickCount();
+    int led = 0;
 
-            if (strcmp(rxBuffer, "avg") == 0)
-            {
-                if (xSemaphoreTake(mutex, pdMS_TO_TICKS(1000)) == pdTRUE)
-                {
-                    if (globalFloatCount == 0)
-                        printf(">>> No inputs yet.\n");
-                    else
-                        printf(">>> Current average: %.2f\n", globalFloatSum / globalFloatCount);
+    for (;;) {
+        vTaskDelayUntil(&last, pdMS_TO_TICKS(HEARTBEAT_PERIOD_MS));
+        led ^= 1;
+        printf("[Heartbeat] LED %s\n", led ? "ON" : "OFF");
+    }
+}
 
-                    xSemaphoreGive(mutex);
+/* Console (UART) task: reads keystrokes, builds a line, and handles simple commands:
+   - status : prints buffer length and last sample time
+   - avg    : prints the current average
+   - clear  : clears the buffer
+*/
+static void vConsoleTask(void* pv)
+{
+    (void)pv;
+
+    char line[LINE_MAX] = { 0 };
+    size_t len = 0;
+    TickType_t last = xTaskGetTickCount();
+
+    for (;;) {
+        vTaskDelayUntil(&last, pdMS_TO_TICKS(CONSOLE_POLL_MS));
+
+#ifdef _WIN32
+        while (_kbhit()) {
+            int ch = _getch();
+            if (ch == '\r' || ch == '\n') {
+                line[len] = '\0';
+                if (len > 0) {
+                    /* Echo & process */
+                    printf("[UART] cmd: %s\n", line);
+
+                    if (strcmp(line, "status") == 0) {
+                        lockBuf();
+                        size_t count = gSensorBuf.count;
+                        size_t head = gSensorBuf.head;
+                        unlockBuf();
+                        printf("[UART] status: count=%zu, head=%zu, cap=%d\n",
+                            count, head, CBUF_CAPACITY);
+                    }
+                    else if (strcmp(line, "avg") == 0) {
+                        lockBuf();
+                        uint64_t sum = gSensorBuf.sum;
+                        size_t count = gSensorBuf.count;
+                        unlockBuf();
+                        double avg = (count == 0) ? 0.0 : (double)sum / (double)count;
+                        printf("[UART] avg=%.4f over %zu samples\n", avg, count);
+                    }
+                    else if (strcmp(line, "clear") == 0) {
+                        lockBuf();
+                        cbuf_clear(&gSensorBuf);
+                        unlockBuf();
+                        printf("[UART] buffer cleared.\n");
+                    }
+                    else {
+                        printf("[UART] unknown cmd. Try: status | avg | clear\n");
+                    }
                 }
+                len = 0;
+                line[0] = '\0';
             }
-            else
-            {
-                float val;
-                char* endptr;
-                val = strtof(rxBuffer, &endptr);
-
-                if (*endptr != '\0') {
-                    // Not a valid float, so convert to float via ASCII
-                    val = stringToFloat(rxBuffer);
-                    printf(">>> Converted string to float: %.2f\n", val);
-                }
-
-                if (xSemaphoreTake(mutex, pdMS_TO_TICKS(1000)) == pdTRUE)
-                {
-                    globalFloatSum += val;
-                    globalFloatCount++;
-                    sharedVar += 10;
-                    xSemaphoreGive(mutex);
-
-                    printf(">>> Stored value: %.2f | Total count: %d\n",
-                        val, globalFloatCount);
-                }
+            else if (ch == 8 /* backspace */) {
+                if (len > 0) { len--; line[len] = '\0'; }
+            }
+            else if (ch >= 32 && ch < 127 && len < LINE_MAX - 1) {
+                line[len++] = (char)ch;
             }
         }
+#else
+        /* Non-Windows builds could poll stdin here if needed. */
+#endif
     }
 }
 
-DWORD WINAPI UARTSimThread(LPVOID lpParam) 
-{
-    char buffer[INPUT_BUFFER_SIZE];
-    for (;;) 
-    {
-        if (fgets(buffer, sizeof(buffer), stdin)) 
-        {
-            buffer[strcspn(buffer, "\n")] = 0;  
-            xQueueSend(xInputQueue, buffer, portMAX_DELAY);
-        }
-    }
-    return 0;
-}
-
+/* -------------------- Main -------------------- */
 int main(void)
 {
-    initializeMutex();
+    /* Seed randomness for pseudo sensor */
+    srand((unsigned)time(NULL));
 
-    xInputQueue = xQueueCreate(5, sizeof(char[INPUT_BUFFER_SIZE]));
+#if USE_MUTEX
+    gBufMutex = xSemaphoreCreateMutex();
+    configASSERT(gBufMutex != NULL);
+#endif
 
-    
-    CreateThread(NULL, 0, UARTSimThread, NULL, 0, NULL);
+    xLineQueue = xQueueCreate(4, LINE_MAX);
+    (void)xLineQueue; /* (reserved if you later swap to a producer thread) */
 
-    xTaskCreate(vUARTHandlerTask, "UART RX", 256, NULL, 2, NULL);
+    /* Create tasks */
+    BaseType_t ok;
 
+    ok = xTaskCreate(vSensorHandlerTask, "SensorHandler",
+        configMINIMAL_STACK_SIZE + 256, NULL,
+        tskIDLE_PRIORITY + 3, &xSensorHandlerTask);
+    configASSERT(ok == pdPASS && xSensorHandlerTask != NULL);
 
-    //static const char* pcTextForTask1 = "Task 1 is running";
-    //static const char* pcTextForTask2 = "Task 2 is running";
+    ok = xTaskCreate(vSensorIsrShimTask, "SensorISR",
+        configMINIMAL_STACK_SIZE + 128, NULL,
+        tskIDLE_PRIORITY + 4, NULL);
+    configASSERT(ok == pdPASS);
 
-    //xTaskCreate(vTaskFunction1, "Task 1", 256, NULL, 1, NULL);
-    //xTaskCreate(vTaskFunction2, "Task 2", 256, NULL, 1, NULL);
-    //xTaskCreate(vPeriodicTask, "Periodic Task", 256, NULL, 2, NULL);
+    ok = xTaskCreate(vLoggerTask, "Logger",
+        configMINIMAL_STACK_SIZE + 256, NULL,
+        tskIDLE_PRIORITY + 2, NULL);
+    configASSERT(ok == pdPASS);
 
-    //xTaskCreate(prvStatsTask, "Stats", 256, NULL, 3, NULL);
-    //xTaskCreate(vInterruptHandledTask, "ISR Task", 256, NULL, 2, &xInterruptTaskHandle);
-    //xTaskCreate(vKeyboardInterruptTask, "Keyboard ISR", 256, NULL, 3, NULL);
+    ok = xTaskCreate(vHeartbeatTask, "Heartbeat",
+        configMINIMAL_STACK_SIZE + 128, NULL,
+        tskIDLE_PRIORITY + 1, NULL);
+    configASSERT(ok == pdPASS);
 
+    ok = xTaskCreate(vConsoleTask, "Console",
+        configMINIMAL_STACK_SIZE + 256, NULL,
+        tskIDLE_PRIORITY + 1, NULL);
+    configASSERT(ok == pdPASS);
+
+    /* Go! */
     vTaskStartScheduler();
 
+    /* Should never get here */
     for (;;);
+    return 0;
 }
