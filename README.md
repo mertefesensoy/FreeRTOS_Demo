@@ -17,7 +17,7 @@ This repository includes two main demonstration systems:
 - **Mutex Protection**: Shows proper use of mutexes to protect shared resources
 - **Circular Buffer**: Implements a thread-safe circular buffer for sensor data
 - **Multiple Tasks**:
-  - `SensorISR`: High-priority task simulating periodic sensor interrupts (100ms)
+  - `SensorISR`: High-priority task simulating ISR timing for periodic sensor data (100ms)
   - `SensorHandler`: Deferred interrupt handler for processing sensor readings
   - `Logger`: Periodic task computing and displaying sensor statistics (1s)
   - `Heartbeat`: Low-priority background task
@@ -99,12 +99,12 @@ Type commands directly in the console window:
 Edit `main.c` to customize behavior:
 
 ```c
-#define SENSOR_PERIOD_MS          100      // Sensor interrupt frequency
-#define LOGGER_PERIOD_MS         1000      // Statistics logging frequency
-#define HEARTBEAT_PERIOD_MS      2000      // Heartbeat interval
-#define CONSOLE_POLL_MS            20      // Console polling rate
-#define CBUF_CAPACITY              64      // Circular buffer size
-#define USE_MUTEX                   1      // Enable/disable mutex (set to 0 to test race conditions)
+#define SENSOR_PERIOD_MS          100      /* Sensor interrupt frequency */
+#define LOGGER_PERIOD_MS         1000      /* Statistics logging frequency */
+#define HEARTBEAT_PERIOD_MS      2000      /* Heartbeat interval */
+#define CONSOLE_POLL_MS            20      /* Console polling rate */
+#define CBUF_CAPACITY              64      /* Circular buffer size */
+#define USE_MUTEX                   1      /* Enable/disable mutex (set to 0 to test race conditions) */
 ```
 
 **Note**: Setting `USE_MUTEX` to 0 demonstrates what happens without proper synchronization - you may observe data corruption or incorrect statistics.
